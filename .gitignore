@@ -138,6 +138,7 @@ celerybeat.pid
 .env
 .envrc
 .venv
+rice_mold_env/
 env/
 venv/
 ENV/
