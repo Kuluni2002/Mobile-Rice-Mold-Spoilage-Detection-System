@@ -14,7 +14,7 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+#lib/
 lib64/
 parts/
 sdist/
@@ -236,7 +236,7 @@ mobile_app/android/app/build/
 mobile_app/android/local.properties
 mobile_app/ios/Pods/
 mobile_app/ios/.symlinks/
-mobile_app/pubspec.lock
+#mobile_app/pubspec.lock
 mobile_app/ios/Flutter/Generated.xcconfig
 mobile_app/android/gradle/
 mobile_app/.idea/
@@ -250,3 +250,12 @@ mobile_app/macos/Pods/
 
 # Windows
 Thumbs.db
+
+# Local secrets / environments
+env.json
+tflite_env/
+
+# Android signing (for later)
+*.jks
+*.keystore
+mobile_app/android/key.properties
