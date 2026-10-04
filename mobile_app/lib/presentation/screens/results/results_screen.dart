@@ -309,7 +309,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
     final args = ModalRoute.of(context)?.settings.arguments as Map<String, dynamic>?;
     
     debugPrint('=== Results Screen Debug ===');
-    debugPrint('Arguments: $args');
+    //debugPrint('Arguments: $args');
     
     if (args == null) {
       return Scaffold(

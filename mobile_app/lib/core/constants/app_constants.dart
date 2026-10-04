@@ -20,6 +20,11 @@ class AppConstants {
   static const String modelPath = 'assets/models/efficientnet_rice_FINAL.tflite';
   static const String labelsPath = 'assets/models/labels.json';
   static const int modelInputSize = 224;
+
+  //  Two-Stage Pipeline Models
+  static const String stage1ModelPath = 'assets/models/stage1_healthy_vs_mold.tflite';
+  static const String stage2ModelPath = 'assets/models/stage2_earlyrisk_vs_spoiled.tflite';
+  static const int stageInputSize = 224;
   
   //  Class Labels
   static const String classHealthy = 'healthy';

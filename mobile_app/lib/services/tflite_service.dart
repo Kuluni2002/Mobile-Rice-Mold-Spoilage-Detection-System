@@ -172,14 +172,33 @@ import 'package:image/image.dart' as img;
 import '../core/constants/app_constants.dart';
 import '../models/grain_models.dart';
 
+// Result type for the two-stage pipeline.
+class GrainClassification {
+  final String finalLabel;
+  final List<double> stage1Probs;
+  final List<double>? stage2Probs; // null when Stage 2 did not run
+
+  const GrainClassification({
+    required this.finalLabel,
+    required this.stage1Probs,
+    this.stage2Probs,
+  });
+}
+
 class TFLiteService {
+  // ── Legacy EfficientNet interpreter ────────────────────────────────────────
   Interpreter? _interpreter;
   bool _isLoaded = false;
 
+  // ── Two-stage pipeline interpreters ────────────────────────────────────────
+  Interpreter? _stage1Interpreter;
+  Interpreter? _stage2Interpreter;
+  bool _stagesLoaded = false;
+
+  // ── Legacy: load EfficientNet model ────────────────────────────────────────
   Future<void> loadModel() async {
     try {
-      _interpreter = await Interpreter.fromAsset(
-        AppConstants.modelPath);
+      _interpreter = await Interpreter.fromAsset(AppConstants.modelPath);
       _isLoaded = true;
       print(' TFLite model loaded');
     } catch (e) {
@@ -187,8 +206,130 @@ class TFLiteService {
     }
   }
 
+  // ── Load Stage 1 and Stage 2 models ────────────────────────────────────────
+  Future<void> loadStageModels() async {
+    if (_stagesLoaded) return;
+    try {
+      _stage1Interpreter = await Interpreter.fromAsset(AppConstants.stage1ModelPath);
+      print(' Stage 1 model loaded');
+    } catch (e) {
+      print(' Stage 1 model load error: $e');
+      _stage1Interpreter = null;
+    }
+
+    try {
+      _stage2Interpreter = await Interpreter.fromAsset(AppConstants.stage2ModelPath);
+      print(' Stage 2 model loaded');
+    } catch (e) {
+      print(' Stage 2 model load error: $e');
+      _stage2Interpreter = null;
+    }
+
+    _stagesLoaded = _stage1Interpreter != null;
+  }
+
+  // ── Shared preprocessing: resize to stageInputSize×stageInputSize,
+  //    divide by 255, then (pixel - mean) / std.
+  //    Reuses AppConstants.mean / AppConstants.std.
+  List<List<List<List<double>>>> preprocessCrop(Uint8List imageBytes) {
+    img.Image? image = img.decodeImage(imageBytes);
+    image = img.copyResize(
+      image!,
+      width: AppConstants.stageInputSize,
+      height: AppConstants.stageInputSize,
+      interpolation: img.Interpolation.linear,
+    );
+
+    return List.generate(1, (_) =>
+      List.generate(AppConstants.stageInputSize, (y) =>
+        List.generate(AppConstants.stageInputSize, (x) =>
+          List.generate(3, (c) {
+            final pixel = image!.getPixel(x, y);
+            double raw;
+            if (c == 0) {
+              raw = img.getRed(pixel) / 255.0;
+            } else if (c == 1) {
+              raw = img.getGreen(pixel) / 255.0;
+            } else {
+              raw = img.getBlue(pixel) / 255.0;
+            }
+            // ImageNet normalization: (pixel/255 - mean) / std
+            return (raw - AppConstants.mean[c]) / AppConstants.std[c];
+          })
+        )
+      )
+    );
+  }
+
+  // ── Run softmax output through interpreter, return probability list ────────
+  List<double> _runInterpreter(Interpreter interp, List<List<List<List<double>>>> input, int numClasses) {
+    final output = List.generate(1, (_) => List.filled(numClasses, 0.0));
+    interp.run(input, output);
+    return List<double>.from(output[0]);
+  }
+
+  // ── Two-stage classification ───────────────────────────────────────────────
+  // Returns a GrainClassification with finalLabel, stage1Probs, and optionally
+  // stage2Probs (null when the image was classified healthy in Stage 1).
+  Future<GrainClassification> classifyGrain(Uint8List bytes) async {
+    if (!_stagesLoaded || _stage1Interpreter == null) {
+      return const GrainClassification(
+        finalLabel: 'error: stage models not loaded',
+        stage1Probs: [],
+        stage2Probs: null,
+      );
+    }
+
+    try {
+      final input = preprocessCrop(bytes);
+
+      // Stage 1: healthy (0) vs mold (1)
+      final stage1Probs = _runInterpreter(_stage1Interpreter!, input, 2);
+      final stage1ArgMax = stage1Probs[0] >= stage1Probs[1] ? 0 : 1;
+
+      if (stage1ArgMax == 0) {
+        // Stage 1 says healthy — skip Stage 2
+        return GrainClassification(
+          finalLabel: AppConstants.classHealthy,
+          stage1Probs: stage1Probs,
+          stage2Probs: null,
+        );
+      }
+
+      // Stage 1 says mold → run Stage 2: early_risk (0) vs spoiled (1)
+      if (_stage2Interpreter == null) {
+        // Stage 2 model failed to load; fall back to a mold label
+        return GrainClassification(
+          finalLabel: AppConstants.classEarlyRisk,
+          stage1Probs: stage1Probs,
+          stage2Probs: null,
+        );
+      }
+
+      final stage2Probs = _runInterpreter(_stage2Interpreter!, input, 2);
+      final stage2ArgMax = stage2Probs[0] >= stage2Probs[1] ? 0 : 1;
+
+      final finalLabel = stage2ArgMax == 0
+          ? AppConstants.classEarlyRisk
+          : AppConstants.classSpoiled;
+
+      return GrainClassification(
+        finalLabel: finalLabel,
+        stage1Probs: stage1Probs,
+        stage2Probs: stage2Probs,
+      );
+    } catch (e, st) {
+      print('classifyGrain error: $e\n$st');
+      return GrainClassification(
+        finalLabel: 'error: $e',
+        stage1Probs: [],
+        stage2Probs: null,
+      );
+    }
+  }
+
+  // ── Legacy EfficientNet preprocessing ─────────────────────────────────────
   // EfficientNet preprocessing
-    // EfficientNet preprocessing
   List<List<List<List<double>>>> _preprocess(Uint8List imageBytes) {
     img.Image? image = img.decodeImage(imageBytes);
     image = img.copyResize(image!,
@@ -220,14 +361,14 @@ class TFLiteService {
     return input;
   }
 
-  // Alias methods for backward compatibility with camera_screen.dart
-Future<void> initialize() async {
-  await loadModel();
-}
+  // ── Alias methods for backward compatibility with camera_screen.dart ───────
+  Future<void> initialize() async {
+    await loadModel();
+  }
 
-Future<GrainResult> classifyImage(Uint8List imageBytes) async {
-  return classify(imageBytes);
-}
+  Future<GrainResult> classifyImage(Uint8List imageBytes) async {
+    return classify(imageBytes);
+  }
 
   GrainResult classify(Uint8List imageBytes) {
     if (!_isLoaded || _interpreter == null) {
@@ -254,5 +395,14 @@ Future<GrainResult> classifyImage(Uint8List imageBytes) async {
     );
   }
 
-  void dispose() => _interpreter?.close();
+  void dispose() {
+    _interpreter?.close();
+    _stage1Interpreter?.close();
+    _stage2Interpreter?.close();
+    _interpreter = null;
+    _stage1Interpreter = null;
+    _stage2Interpreter = null;
+    _isLoaded = false;
+    _stagesLoaded = false;
+  }
 }

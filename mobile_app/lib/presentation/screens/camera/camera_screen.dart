@@ -1385,26 +1385,44 @@ Future<void> _processImage(String imagePath, Uint8List imageBytes) async {
       ),
     );
     
-    // Initialize TFLite service with detailed logging
+    // Initialize two-stage TFLite service
     tfliteService = TFLiteService();
     
-    debugPrint('=== Starting TFLite Analysis ===');
+    debugPrint('=== Starting Two-Stage TFLite Analysis ===');
     debugPrint('Image size: ${imageBytes.length} bytes');
     
-    await tfliteService.initialize();
-    debugPrint('TFLite service initialized successfully');
+    await tfliteService.loadStageModels();
+    debugPrint('Stage models loaded');
     
-    final classificationResult = await tfliteService.classifyImage(imageBytes);
-    debugPrint('Classification result: ${classificationResult.className} (${classificationResult.confidence})');
+    final grainClassification = await tfliteService.classifyGrain(imageBytes);
+    debugPrint('Stage 1 probs: ${grainClassification.stage1Probs}');
+    debugPrint('Stage 2 probs: ${grainClassification.stage2Probs}');
+    debugPrint('Final label: ${grainClassification.finalLabel}');
+    
+        if (grainClassification.finalLabel.startsWith('error')) {
+      throw Exception(grainClassification.finalLabel);
+    }
+    // Derive a single confidence value to pass to ResultsScreen.
+    // Use the winning probability from whichever stage produced the final label.
+    double confidence;
+    final s2 = grainClassification.stage2Probs;
+    if (s2 != null) {
+      // Stage 2 ran: confidence = max(stage2Probs)
+      confidence = s2[0] >= s2[1] ? s2[0] : s2[1];
+    } else {
+      // Healthy (or stage2 missing): confidence = stage1Probs[0] (healthy prob)
+      final s1 = grainClassification.stage1Probs;
+      confidence = s1.isNotEmpty ? (s1[0] >= s1[1] ? s1[0] : s1[1]) : 0.0;
+    }
     
     if (!mounted) return;
     Navigator.of(context).pop(); // Dismiss loading
     
-        debugPrint('=== About to navigate ===');
-    debugPrint('Classification: ${classificationResult.className}');
-    debugPrint('Confidence: ${classificationResult.confidence}');
+    debugPrint('=== About to navigate ===');
+    debugPrint('Label: ${grainClassification.finalLabel}');
+    debugPrint('Confidence: $confidence');
     
-    // Use direct navigation instead of named routes
+    // Use direct navigation — same args as before so ResultsScreen works unchanged
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
         builder: (context) => ResultsScreen(),
@@ -1412,8 +1430,8 @@ Future<void> _processImage(String imagePath, Uint8List imageBytes) async {
           arguments: {
             'imagePath': imagePath,
             'imageBytes': imageBytes,
-            'label': classificationResult.className,
-            'confidence': classificationResult.confidence,
+            'label': grainClassification.finalLabel,
+            'confidence': confidence,
             'timestamp': DateTime.now().millisecondsSinceEpoch,
             'scanId': DateTime.now().millisecondsSinceEpoch.toString(),
           },
@@ -1422,8 +1440,6 @@ Future<void> _processImage(String imagePath, Uint8List imageBytes) async {
     );
     
     debugPrint('=== Navigation called ===');
-    
-    debugPrint('Navigation completed');
     
   } catch (e, stackTrace) {
     debugPrint('=== TFLite Error ===');

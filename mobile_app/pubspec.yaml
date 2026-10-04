@@ -68,5 +68,7 @@ flutter:
   assets:
     - assets/images/
     - assets/models/efficientnet_rice_FINAL.tflite
+    - assets/models/stage1_healthy_vs_mold.tflite
+    - assets/models/stage2_earlyrisk_vs_spoiled.tflite
     - assets/models/labels.json
     - assets/icons/
