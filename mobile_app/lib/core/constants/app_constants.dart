@@ -25,6 +25,20 @@ class AppConstants {
   static const String stage1ModelPath = 'assets/models/stage1_healthy_vs_mold.tflite';
   static const String stage2ModelPath = 'assets/models/stage2_earlyrisk_vs_spoiled.tflite';
   static const int stageInputSize = 224;
+
+  // On-device MobileSAM (Phase B)
+  static const String samEncoderPath = 'assets/models/mobilesam_encoder.onnx';
+  static const String samDecoderPath = 'assets/models/mobilesam_decoder.onnx';
+  static const int samSide = 1024;             // SAM input / work-copy long side
+  static const int cropSourceMaxSide = 2400;   // long side of the hi-res crop source
+  static const int cropPadPx = 5;              // padding added to mask bbox on crop source
+  static const int maskErodePx = 0;            // elliptical erosion (0 = disabled)
+  static const int diffThreshold = 25;         // |gray - bgGray| threshold
+  static const int satThreshold  = 40;         // |sat - bgSat|  threshold
+  static const int minArea = 150;              // min blob area in WORK pixels
+  static const int maxArea = 5000;             // max blob area in WORK pixels
+  static const int maxGrains = 150;            // cap on number of grains processed
+  static const int boxPad = 4;                 // padding around blob bbox before SAM decode
   
   //  Class Labels
   static const String classHealthy = 'healthy';
