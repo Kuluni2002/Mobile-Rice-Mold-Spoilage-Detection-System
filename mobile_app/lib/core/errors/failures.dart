@@ -32,3 +32,15 @@ class CameraFailure extends Failure {
 class PermissionFailure extends Failure {
   const PermissionFailure(super.message);
 }
+
+class DatabaseFailure extends Failure {
+  final bool isDuplicateBatchNumber;
+
+  const DatabaseFailure(
+    super.message, {
+    this.isDuplicateBatchNumber = false,
+  });
+
+  @override
+  List<Object> get props => [message, isDuplicateBatchNumber];
+}

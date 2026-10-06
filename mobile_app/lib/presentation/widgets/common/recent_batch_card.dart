@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../domain/entities/batch.dart';
 
@@ -28,7 +29,7 @@ class RecentBatchCard extends StatelessWidget {
                 children: [
                   Expanded(
                     child: Text(
-                      batch.name,
+                      batch.batchNumber,
                       style: Theme.of(context).textTheme.titleMedium,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -39,13 +40,13 @@ class RecentBatchCard extends StatelessWidget {
                       vertical: 4,
                     ),
                     decoration: BoxDecoration(
-                      color: AppColors.healthy.withOpacity(0.1),
+                      color: _resultColor(batch.latestResult).withOpacity(0.1),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Text(
-                      'Healthy',
+                      _resultLabel(batch.latestResult),
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: AppColors.healthy,
+                        color: _resultColor(batch.latestResult),
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -86,6 +87,32 @@ class RecentBatchCard extends StatelessWidget {
   }
   
   String _formatDate(DateTime date) {
-    return '${date.day}/${date.month}/${date.year}';
+    return DateFormat.yMd().format(date.toLocal());
+  }
+
+  String _resultLabel(String? result) {
+    switch (result) {
+      case 'early_risk':
+        return 'Early risk';
+      case 'spoiled':
+        return 'Spoiled';
+      case 'healthy':
+        return 'Healthy';
+      default:
+        return 'Not scanned';
+    }
+  }
+
+  Color _resultColor(String? result) {
+    switch (result) {
+      case 'early_risk':
+        return AppColors.earlyRisk;
+      case 'spoiled':
+        return AppColors.spoiled;
+      case 'healthy':
+        return AppColors.healthy;
+      default:
+        return AppColors.textSecondary;
+    }
   }
 }

@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 import '../../../core/constants/app_colors.dart';
+import '../../../core/errors/failures.dart';
 import '../../../domain/entities/batch.dart';
+import '../../../services/database_service.dart';
 
 class BatchCreateScreen extends StatefulWidget {
   const BatchCreateScreen({super.key});
@@ -12,7 +14,7 @@ class BatchCreateScreen extends StatefulWidget {
 
 class _BatchCreateScreenState extends State<BatchCreateScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _nameController = TextEditingController();
+  final _batchNumberController = TextEditingController();
   final _sourceController = TextEditingController();
   final _quantityController = TextEditingController();
   final _locationController = TextEditingController();
@@ -32,7 +34,7 @@ class _BatchCreateScreenState extends State<BatchCreateScreen> {
   
   @override
   void dispose() {
-    _nameController.dispose();
+    _batchNumberController.dispose();
     _sourceController.dispose();
     _quantityController.dispose();
     _locationController.dispose();
@@ -62,7 +64,7 @@ class _BatchCreateScreenState extends State<BatchCreateScreen> {
     // Create batch entity
     final batch = Batch(
       id: const Uuid().v4(),
-      name: _nameController.text.trim(),
+      batchNumber: _batchNumberController.text.trim(),
       source: _sourceController.text.trim().isEmpty
 ? null
 : _sourceController.text.trim(),
@@ -77,20 +79,37 @@ location: _locationController.text.trim().isEmpty
 createdAt: DateTime.now(),
 updatedAt: DateTime.now(),
 );
-// TODO: Save to database using repository
-
-if (!mounted) return;
-
-// Show success message
-ScaffoldMessenger.of(context).showSnackBar(
-  const SnackBar(
-    content: Text('Batch created successfully!'),
-    backgroundColor: AppColors.healthy,
-  ),
-);
-
-// Navigate back
-Navigator.of(context).pop(batch);
+    try {
+      await DatabaseService.instance.insertBatch(batch);
+    } on DatabaseFailure catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(error.isDuplicateBatchNumber
+              ? 'This batch number already exists'
+              : error.message),
+          backgroundColor: AppColors.spoiled,
+        ),
+      );
+      return;
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Unable to save batch: $error'),
+          backgroundColor: AppColors.spoiled,
+        ),
+      );
+      return;
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Batch created successfully!'),
+        backgroundColor: AppColors.healthy,
+      ),
+    );
+    Navigator.of(context).pop(true);
 }
 @override
 Widget build(BuildContext context) {
@@ -108,17 +127,17 @@ Text(
 style: Theme.of(context).textTheme.titleLarge,
 ),
 const SizedBox(height: 16),
-        // Batch Name (Required)
+        // Batch Number (Required)
         TextFormField(
-          controller: _nameController,
+          controller: _batchNumberController,
           decoration: const InputDecoration(
-            labelText: 'Batch Name *',
+            labelText: 'Batch Number *',
             hintText: 'e.g., Warehouse A - Row 3',
             prefixIcon: Icon(Icons.label),
           ),
           validator: (value) {
             if (value == null || value.trim().isEmpty) {
-              return 'Please enter a batch name';
+              return 'Please enter a batch number';
             }
             return null;
           },
@@ -219,7 +238,5 @@ const SizedBox(height: 16),
 );
 }
 }
-
-
 
 

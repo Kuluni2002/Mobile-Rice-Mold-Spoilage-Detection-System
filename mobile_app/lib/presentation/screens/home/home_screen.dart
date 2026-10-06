@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
-import '../../../core/routes/app_routes.dart';
+import 'package:intl/intl.dart';
 import '../../../core/constants/app_colors.dart';
-import '../../widgets/common/stat_card.dart';
+import '../../../core/routes/app_routes.dart';
+import '../../../domain/entities/batch.dart';
+import '../../../services/database_service.dart';
 import '../../widgets/common/recent_batch_card.dart';
+import '../../widgets/common/stat_card.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -13,7 +16,45 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _selectedIndex = 0;
-  
+  bool _loading = true;
+  String? _error;
+  Map<String, int> _stats = {};
+  List<Batch> _batches = [];
+  List<Batch> _recentBatches = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadData();
+  }
+
+  Future<void> _loadData() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final results = await Future.wait([
+        DatabaseService.instance.getDashboardStats(),
+        DatabaseService.instance.getBatches(),
+        DatabaseService.instance.getRecentBatches(),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        _stats = results[0] as Map<String, int>;
+        _batches = results[1] as List<Batch>;
+        _recentBatches = results[2] as List<Batch>;
+        _loading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = error.toString().replaceFirst('DatabaseFailure: ', '');
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -22,17 +63,13 @@ class _HomeScreenState extends State<HomeScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.settings),
-            onPressed: () {
-              // TODO: Navigate to settings
-            },
+            onPressed: () {},
           ),
         ],
       ),
       body: _buildBody(),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          Navigator.pushNamed(context, AppRoutes.camera);
-        },
+        onPressed: () => Navigator.pushNamed(context, AppRoutes.camera),
         icon: const Icon(Icons.camera_alt),
         label: const Text('Scan Grains'),
         backgroundColor: AppColors.primary,
@@ -40,36 +77,20 @@ class _HomeScreenState extends State<HomeScreen> {
       floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedIndex,
-        onDestinationSelected: (index) {
-          setState(() {
-            _selectedIndex = index;
-          });
-        },
+        onDestinationSelected: (index) => setState(() => _selectedIndex = index),
         destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.home_outlined),
-            selectedIcon: Icon(Icons.home),
-            label: 'Home',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.inventory_2_outlined),
-            selectedIcon: Icon(Icons.inventory_2),
-            label: 'Batches',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.analytics_outlined),
-            selectedIcon: Icon(Icons.analytics),
-            label: 'Analytics',
-          ),
+          NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'Home'),
+          NavigationDestination(icon: Icon(Icons.inventory_2_outlined), selectedIcon: Icon(Icons.inventory_2), label: 'Batches'),
+          NavigationDestination(icon: Icon(Icons.analytics_outlined), selectedIcon: Icon(Icons.analytics), label: 'Analytics'),
         ],
       ),
     );
   }
-  
+
   Widget _buildBody() {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_error != null) return _buildErrorState();
     switch (_selectedIndex) {
-      case 0:
-        return _buildHomeTab();
       case 1:
         return _buildBatchesTab();
       case 2:
@@ -78,260 +99,160 @@ class _HomeScreenState extends State<HomeScreen> {
         return _buildHomeTab();
     }
   }
-  
+
   Widget _buildHomeTab() {
     return RefreshIndicator(
-      onRefresh: _refreshData,
+      onRefresh: _loadData,
       child: SingleChildScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Welcome message
-            Text(
-              'Welcome back!',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
+            Text('Welcome back!', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 8),
-            Text(
-              'Monitor your rice quality and detect mold early',
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
+            Text('Monitor your rice quality and detect mold early',
+                style: Theme.of(context).textTheme.bodyMedium),
             const SizedBox(height: 24),
-            
-            // Quick stats
-            Text(
-              'Overview',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
+            Text('Overview', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 12),
-            
-            Row(
-              children: [
-                Expanded(
-                  child: StatCard(
-                    title: 'Total Batches',
-                    value: '0',
-                    icon: Icons.inventory_2,
-                    color: AppColors.primary,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: StatCard(
-                    title: 'Total Scans',
-                    value: '0',
-                    icon: Icons.camera_alt,
-                    color: AppColors.primaryLight,
-                  ),
-                ),
-              ],
-            ),
+            Row(children: [
+              Expanded(child: StatCard(title: 'Total Batches', value: '${_stats['totalBatches'] ?? 0}', icon: Icons.inventory_2, color: AppColors.primary)),
+              const SizedBox(width: 12),
+              Expanded(child: StatCard(title: 'Total Scans', value: '${_stats['totalScans'] ?? 0}', icon: Icons.camera_alt, color: AppColors.primaryLight)),
+            ]),
             const SizedBox(height: 12),
-            
-            Row(
-              children: [
-                Expanded(
-                  child: StatCard(
-                    title: 'Healthy',
-                    value: '0',
-                    icon: Icons.check_circle,
-                    color: AppColors.healthy,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: StatCard(
-                    title: 'At Risk',
-                    value: '0',
-                    icon: Icons.warning,
-                    color: AppColors.earlyRisk,
-                  ),
-                ),
-              ],
-            ),
+            Row(children: [
+              Expanded(child: StatCard(title: 'Healthy', value: '${_stats['healthy'] ?? 0}', icon: Icons.check_circle, color: AppColors.healthy)),
+              const SizedBox(width: 12),
+              Expanded(child: StatCard(title: 'At Risk', value: '${_stats['batchesNeedingAttention'] ?? 0}', icon: Icons.warning, color: AppColors.earlyRisk)),
+            ]),
             const SizedBox(height: 24),
-            
-            // Quick actions
-            Text(
-              'Quick Actions',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
+            Text('Quick Actions', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 12),
-            
-            _buildQuickAction(
-              context,
-              title: 'Create New Batch',
-              icon: Icons.add_box,
-              color: AppColors.primary,
-              onTap: () {
-                Navigator.pushNamed(context, AppRoutes.batchCreate);
-              },
-            ),
+            _buildQuickAction('Create New Batch', Icons.add_box, AppColors.primary, () async {
+              final created = await Navigator.pushNamed(context, AppRoutes.batchCreate);
+              if (created == true) await _loadData();
+            }),
             const SizedBox(height: 12),
-            
-            _buildQuickAction(
-              context,
-              title: 'Scan Grains',
-              icon: Icons.camera_alt,
-              color: AppColors.primaryLight,
-              onTap: () {
-                Navigator.pushNamed(context, AppRoutes.camera);
-              },
-            ),
+            _buildQuickAction('Scan Grains', Icons.camera_alt, AppColors.primaryLight,
+                () => Navigator.pushNamed(context, AppRoutes.camera)),
             const SizedBox(height: 24),
-            
-            // Recent batches
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'Recent Batches',
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-                TextButton(
-                  onPressed: () {
-                    setState(() {
-                      _selectedIndex = 1;
-                    });
-                  },
-                  child: const Text('View All'),
-                ),
-              ],
-            ),
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              Text('Recent Batches', style: Theme.of(context).textTheme.titleMedium),
+              TextButton(onPressed: () => setState(() => _selectedIndex = 1), child: const Text('View All')),
+            ]),
             const SizedBox(height: 12),
-            
-            // Empty state or recent batches list
-            _buildEmptyState(
-              icon: Icons.inventory_2_outlined,
-              message: 'No batches yet.\nCreate your first batch to get started!',
-            ),
-            
-            const SizedBox(height: 100), // Space for FAB
+            if (_recentBatches.isEmpty)
+              _buildEmptyState(Icons.inventory_2_outlined, 'No batches yet - create one')
+            else
+              ..._recentBatches.map((batch) => Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: RecentBatchCard(
+                  batch: batch,
+                  onTap: () => Navigator.pushNamed(context, AppRoutes.batchDetail, arguments: {'batchId': batch.id}),
+                ),
+              )),
+            const SizedBox(height: 100),
           ],
         ),
       ),
     );
   }
-  
+
   Widget _buildBatchesTab() {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    return RefreshIndicator(
+      onRefresh: _loadData,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(16),
         children: [
-          Text(
-            'All Batches',
-            style: Theme.of(context).textTheme.titleLarge,
-          ),
+          Text('All Batches', style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: 16),
-          
-          // Empty state
-          _buildEmptyState(
-            icon: Icons.inventory_2_outlined,
-            message: 'No batches created yet.\nTap the button below to create your first batch.',
-          ),
-          
+          if (_batches.isEmpty)
+            _buildEmptyState(Icons.inventory_2_outlined, 'No batches yet - create one')
+          else
+            ..._batches.map(_buildBatchListTile),
           const SizedBox(height: 100),
         ],
       ),
     );
   }
-  
-  Widget _buildAnalyticsTab() {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Analytics',
-            style: Theme.of(context).textTheme.titleLarge,
-          ),
-          const SizedBox(height: 16),
-          
-          _buildEmptyState(
-            icon: Icons.analytics_outlined,
-            message: 'No data available yet.\nStart scanning batches to see analytics.',
-          ),
-          
-          const SizedBox(height: 100),
-        ],
-      ),
-    );
-  }
-  
-  Widget _buildQuickAction(
-    BuildContext context, {
-    required String title,
-    required IconData icon,
-    required Color color,
-    required VoidCallback onTap,
-  }) {
+
+  Widget _buildBatchListTile(Batch batch) {
+    final color = _resultColor(batch.latestResult);
     return Card(
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Row(
-            children: [
-              Container(
-                width: 48,
-                height: 48,
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(icon, color: color, size: 28),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Text(
-                  title,
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-              ),
-              Icon(Icons.arrow_forward_ios, color: AppColors.textSecondary, size: 16),
-            ],
-          ),
+      child: ListTile(
+        title: Text(batch.batchNumber),
+        subtitle: Text([
+          if (batch.variety != null) batch.variety!,
+          'Stored ${DateFormat.yMd().format(batch.storageDate)}',
+          '${batch.scanCount} scan${batch.scanCount == 1 ? '' : 's'}',
+        ].join(' · ')),
+        trailing: Chip(
+          label: Text(_resultLabel(batch.latestResult)),
+          labelStyle: TextStyle(color: color, fontSize: 12),
+          backgroundColor: color.withOpacity(0.1),
         ),
+        onTap: () => Navigator.pushNamed(context, AppRoutes.batchDetail, arguments: {'batchId': batch.id}),
       ),
     );
   }
-  
-  Widget _buildEmptyState({
-    required IconData icon,
-    required String message,
-  }) {
-    return Center(
+
+  Widget _buildAnalyticsTab() => _buildEmptyState(Icons.analytics_outlined, 'No data available yet.\nStart scanning batches to see analytics.');
+
+  Widget _buildErrorState() => Center(
+    child: Column(mainAxisSize: MainAxisSize.min, children: [
+      const Icon(Icons.error_outline, color: AppColors.spoiled, size: 48),
+      const SizedBox(height: 12),
+      Text(_error ?? 'Unable to load data', textAlign: TextAlign.center),
+      const SizedBox(height: 12),
+      ElevatedButton(onPressed: _loadData, child: const Text('Retry')),
+    ]),
+  );
+
+  Widget _buildQuickAction(String title, IconData icon, Color color, VoidCallback onTap) => Card(
+    child: InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(16),
       child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              icon,
-              size: 80,
-              color: AppColors.divider,
-            ),
-            const SizedBox(height: 16),
-            Text(
-              message,
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                color: AppColors.textSecondary,
-              ),
-              textAlign: TextAlign.center,
-            ),
-          ],
-        ),
+        padding: const EdgeInsets.all(16),
+        child: Row(children: [
+          Icon(icon, color: color, size: 28),
+          const SizedBox(width: 16),
+          Expanded(child: Text(title, style: Theme.of(context).textTheme.titleMedium)),
+          const Icon(Icons.arrow_forward_ios, color: AppColors.textSecondary, size: 16),
+        ]),
       ),
-    );
+    ),
+  );
+
+  Widget _buildEmptyState(IconData icon, String message) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(32),
+      child: Column(children: [
+        Icon(icon, size: 80, color: AppColors.divider),
+        const SizedBox(height: 16),
+        Text(message, textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: AppColors.textSecondary)),
+      ]),
+    ),
+  );
+
+  String _resultLabel(String? result) {
+    switch (result) {
+      case 'healthy': return 'Healthy';
+      case 'early_risk': return 'Early risk';
+      case 'spoiled': return 'Spoiled';
+      default: return 'Not scanned';
+    }
   }
-  
-  Future<void> _refreshData() async {
-    // TODO: Implement data refresh
-    await Future.delayed(const Duration(seconds: 1));
+
+  Color _resultColor(String? result) {
+    switch (result) {
+      case 'healthy': return AppColors.healthy;
+      case 'early_risk': return AppColors.earlyRisk;
+      case 'spoiled': return AppColors.spoiled;
+      default: return AppColors.textSecondary;
+    }
   }
 }

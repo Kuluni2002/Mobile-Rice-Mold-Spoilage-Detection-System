@@ -86,7 +86,7 @@ class AppConstants {
   
   // Database
   static const String dbName    = 'rice_mold.db';
-  static const int    dbVersion = 1;
+  static const int    dbVersion = 2;
   
   // SharedPreferences Keys
   static const String keyIsFirstTime = 'is_first_time';
