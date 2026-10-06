@@ -132,7 +132,7 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: 12),
             _buildQuickAction('Create New Batch', Icons.add_box, AppColors.primary, () async {
               final created = await Navigator.pushNamed(context, AppRoutes.batchCreate);
-              if (created == true) await _loadData();
+              if (created != null) await _loadData();
             }),
             const SizedBox(height: 12),
             _buildQuickAction('Scan Grains', Icons.camera_alt, AppColors.primaryLight,
@@ -150,7 +150,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 padding: const EdgeInsets.only(bottom: 8),
                 child: RecentBatchCard(
                   batch: batch,
-                  onTap: () => Navigator.pushNamed(context, AppRoutes.batchDetail, arguments: {'batchId': batch.id}),
+                  onTap: () async {
+                    await Navigator.pushNamed(context, AppRoutes.batchDetail, arguments: {'batchId': batch.id});
+                    if (mounted) await _loadData();
+                  },
                 ),
               )),
             const SizedBox(height: 100),
@@ -182,19 +185,97 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildBatchListTile(Batch batch) {
     final color = _resultColor(batch.latestResult);
     return Card(
+      clipBehavior: Clip.antiAlias,
+      elevation: 2,
+      margin: const EdgeInsets.only(bottom: 12),
       child: ListTile(
-        title: Text(batch.batchNumber),
-        subtitle: Text([
-          if (batch.variety != null) batch.variety!,
-          'Stored ${DateFormat.yMd().format(batch.storageDate)}',
-          '${batch.scanCount} scan${batch.scanCount == 1 ? '' : 's'}',
-        ].join(' · ')),
-        trailing: Chip(
-          label: Text(_resultLabel(batch.latestResult)),
-          labelStyle: TextStyle(color: color, fontSize: 12),
-          backgroundColor: color.withOpacity(0.1),
+        contentPadding: const EdgeInsets.fromLTRB(8, 12, 12, 12),
+        leading: Container(
+          width: 5,
+          height: 82,
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(5),
+          ),
         ),
-        onTap: () => Navigator.pushNamed(context, AppRoutes.batchDetail, arguments: {'batchId': batch.id}),
+        title: Row(
+          children: [
+            Expanded(
+              child: Text(
+                batch.batchNumber,
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const SizedBox(width: 8),
+            _buildBatchStatusChip(batch.latestResult),
+          ],
+        ),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (batch.variety != null && batch.variety!.isNotEmpty)
+                _buildBatchMetaRow(Icons.grain, batch.variety!),
+              _buildBatchMetaRow(
+                Icons.calendar_today_outlined,
+                'Stored ${DateFormat.yMd().format(batch.storageDate)}',
+              ),
+              _buildBatchMetaRow(
+                Icons.camera_alt_outlined,
+                '${batch.scanCount} scan${batch.scanCount == 1 ? '' : 's'}',
+              ),
+            ],
+          ),
+        ),
+        trailing: const Icon(Icons.chevron_right, color: AppColors.textSecondary),
+        onTap: () async {
+          await Navigator.pushNamed(context, AppRoutes.batchDetail, arguments: {'batchId': batch.id});
+          if (mounted) await _loadData();
+        },
+      ),
+    );
+  }
+
+  Widget _buildBatchMetaRow(IconData icon, String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 5),
+      child: Row(
+        children: [
+          Icon(icon, size: 15, color: AppColors.textSecondary),
+          const SizedBox(width: 7),
+          Expanded(
+            child: Text(
+              text,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppColors.textSecondary,
+                  ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBatchStatusChip(String? result) {
+    final color = _resultColor(result);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        _resultLabel(result),
+        style: TextStyle(
+          color: color,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+        ),
       ),
     );
   }

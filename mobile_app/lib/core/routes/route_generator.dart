@@ -30,8 +30,9 @@ class RouteGenerator {
         return MaterialPageRoute(builder: (_) => const HomeScreen());
         
       case AppRoutes.camera:
+        final args = settings.arguments as Map<String, dynamic>?;
         return MaterialPageRoute(
-          builder: (_) => const camera.CameraScreen(),
+          builder: (_) => camera.CameraScreen(batchId: args?['batchId'] as String?),
           fullscreenDialog: true,
         );
         

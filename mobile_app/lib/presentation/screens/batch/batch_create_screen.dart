@@ -109,7 +109,7 @@ updatedAt: DateTime.now(),
         backgroundColor: AppColors.healthy,
       ),
     );
-    Navigator.of(context).pop(true);
+    Navigator.of(context).pop(batch);
 }
 @override
 Widget build(BuildContext context) {
@@ -238,5 +238,4 @@ const SizedBox(height: 16),
 );
 }
 }
-
 
