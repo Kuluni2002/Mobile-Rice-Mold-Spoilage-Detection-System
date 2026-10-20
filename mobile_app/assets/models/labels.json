@@ -1,0 +1,14 @@
+{
+  "classes": [
+    "healthy",
+    "early_risk",
+    "spoiled"
+  ],
+  "model": "EfficientNet-B0 T4 Class Weights",
+  "quantization": "Float32",
+  "input_size": "224x224x3",
+  "accuracy": "97.67%",
+  "macro_f1": "0.6388",
+  "best_technique": "T4 Class Weights Only",
+  "version": "1.0"
+}
