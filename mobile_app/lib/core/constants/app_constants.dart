@@ -1,4 +1,8 @@
 class AppConstants {
+  static const int maxImageBytes = 25 * 1024 * 1024;
+  static const int minImageLongSide = 1200;
+  static const double blurTileVarianceMin = 40.0;
+  static const Duration analysisTimeout = Duration(minutes: 3);
   // App Info
   static const String appName = 'Rice Mold Detector';
   static const String appVersion = '1.0.0';

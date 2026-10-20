@@ -124,15 +124,28 @@ class _MyHomePageState extends State<MyHomePage> {
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:flutter/foundation.dart';
 import 'core/theme/app_theme.dart';
 import 'core/routes/route_generator.dart';
 import 'core/routes/app_routes.dart';
 import 'core/constants/app_constants.dart';
-import 'providers/scan_provider.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  FlutterError.onError = (details) {
+    debugPrint('Flutter error: ${details.exception}\n${details.stack}');
+  };
+  PlatformDispatcher.instance.onError = (error, stack) {
+    debugPrint('Platform error: $error\n$stack');
+    return true;
+  };
+  if (kReleaseMode) {
+    ErrorWidget.builder = (details) => const Material(
+          child: Center(
+            child: Text('Something went wrong on this screen'),
+          ),
+        );
+  }
   
   // Lock orientation to portrait
   await SystemChrome.setPreferredOrientations([

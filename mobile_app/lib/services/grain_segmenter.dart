@@ -46,6 +46,28 @@ class GrainCrop {
   });
 }
 
+class SegmentationReport {
+  final int originalWidth;
+  final int originalHeight;
+  final int rawComponents;
+  final int usableGrains;
+  final int touchingBlobs;
+  final int skippedGrains;
+  final bool grainCapReached;
+  final double sharpness;
+
+  const SegmentationReport({
+    required this.originalWidth,
+    required this.originalHeight,
+    required this.rawComponents,
+    required this.usableGrains,
+    required this.touchingBlobs,
+    required this.skippedGrains,
+    required this.grainCapReached,
+    required this.sharpness,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Internal isolate message types (only primitives / typed lists)
 // ---------------------------------------------------------------------------
@@ -68,6 +90,13 @@ class _GrainCropData {
   const _GrainCropData(this.pngBytes, this.x, this.y, this.w, this.h);
 }
 
+class _SegmentationResult {
+  final List<_GrainCropData> crops;
+  final SegmentationReport report;
+
+  const _SegmentationResult(this.crops, this.report);
+}
+
 // ---------------------------------------------------------------------------
 // GrainSegmenter -- public API
 // ---------------------------------------------------------------------------
@@ -76,6 +105,7 @@ class GrainSegmenter {
   Uint8List? _encoderBytes;
   Uint8List? _decoderBytes;
   bool _initialized = false;
+  SegmentationReport? lastReport;
 
   /// Load model bytes from assets. Must be called before [segment].
   Future<void> init() async {
@@ -111,13 +141,14 @@ class GrainSegmenter {
     );
 
     // Run everything in a separate isolate so the UI thread is never blocked.
-    final results = await compute(_segmentIsolate, request);
+    final result = await compute(_segmentIsolate, request);
+    lastReport = result.report;
 
     final totalMs = DateTime.now().difference(t0).inMilliseconds;
     debugPrint('[GrainSegmenter] segment: total wall-time ${totalMs}ms, '
-        '${results.length} grains returned');
+        '${result.crops.length} grains returned sharpness=${result.report.sharpness}');
 
-    return results
+    return result.crops
         .map((d) => GrainCrop(
               pngBytes: d.pngBytes,
               x: d.x,
@@ -133,6 +164,7 @@ class GrainSegmenter {
     _encoderBytes = null;
     _decoderBytes = null;
     _initialized = false;
+    lastReport = null;
   }
 }
 
@@ -140,7 +172,7 @@ class GrainSegmenter {
 // Isolate entry-point (top-level so compute() can send it)
 // ---------------------------------------------------------------------------
 
-Future<List<_GrainCropData>> _segmentIsolate(_SegmentRequest req) async {
+Future<_SegmentationResult> _segmentIsolate(_SegmentRequest req) async {
   // Init ORT environment once per isolate invocation.
   OrtEnv.instance.init();
   try {
@@ -150,7 +182,7 @@ Future<List<_GrainCropData>> _segmentIsolate(_SegmentRequest req) async {
   }
 }
 
-Future<List<_GrainCropData>> _runSegmentation(_SegmentRequest req) async {
+Future<_SegmentationResult> _runSegmentation(_SegmentRequest req) async {
   // -- STAGE A: decode + bake EXIF -----------------------------------------
   final stageA = Stopwatch()..start();
   img.Image? fullImage = img.decodeImage(req.imageBytes);
@@ -254,6 +286,45 @@ img.Image _resizeLongSide(img.Image src, int longSide) {
       width: newW, height: newH, interpolation: img.Interpolation.average);
 }
 
+double _calculateTileSharpness(img.Image work) {
+  final gray = Uint8List(work.width * work.height);
+  for (var y = 0; y < work.height; y++) {
+    for (var x = 0; x < work.width; x++) {
+      final px = work.getPixel(x, y);
+      gray[y * work.width + x] =
+          (0.299 * px.r + 0.587 * px.g + 0.114 * px.b).round().clamp(0, 255);
+    }
+  }
+  var maximum = 0.0;
+  for (var ty = 0; ty < 6; ty++) {
+    for (var tx = 0; tx < 6; tx++) {
+      final x0 = (work.width * tx ~/ 6).clamp(1, work.width - 2);
+      final x1 = (work.width * (tx + 1) ~/ 6).clamp(x0 + 1, work.width - 1);
+      final y0 = (work.height * ty ~/ 6).clamp(1, work.height - 2);
+      final y1 = (work.height * (ty + 1) ~/ 6).clamp(y0 + 1, work.height - 1);
+      final values = <double>[];
+      for (var y = y0; y < y1; y++) {
+        for (var x = x0; x < x1; x++) {
+          final i = y * work.width + x;
+          values.add((4 * gray[i] -
+                  gray[i - work.width] -
+                  gray[i + work.width] -
+                  gray[i - 1] -
+                  gray[i + 1])
+              .toDouble());
+        }
+      }
+      if (values.isEmpty) continue;
+      final mean = values.reduce((a, b) => a + b) / values.length;
+      final variance =
+          values.map((v) => (v - mean) * (v - mean)).reduce((a, b) => a + b) /
+              values.length;
+      if (variance > maximum) maximum = variance;
+    }
+  }
+  return maximum;
+}
+
 // ---------------------------------------------------------------------------
 // Helper: build SAM encoder input tensor (NCHW float32, 1x3x1024x1024)
 // ---------------------------------------------------------------------------
@@ -320,6 +391,12 @@ class _Blob {
   final int area;
   const _Blob(this.x0, this.y0, this.x1, this.y1, this.area);
 }
+
+int _lastRawComponents = 0;
+int _lastTouchingBlobs = 0;
+
+int _lastRawComponents = 0;
+int _lastTouchingBlobs = 0;
 
 // ---------------------------------------------------------------------------
 // Grain finder (on WORK copy)
@@ -784,7 +861,6 @@ Uint8List _boxBlur(Uint8List src, int w, int h, int passes) {
   return cur;
 }*/
 
-
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -794,6 +870,31 @@ import 'package:image/image.dart' as img;
 import 'package:onnxruntime_plus/onnxruntime_plus.dart';
 
 import '../core/constants/app_constants.dart';
+
+int _lastRawComponents = 0;
+int _lastTouchingBlobs = 0;
+
+class SegmentationReport {
+  final int originalWidth;
+  final int originalHeight;
+  final int rawComponents;
+  final int usableGrains;
+  final int touchingBlobs;
+  final int skippedGrains;
+  final bool grainCapReached;
+  final double sharpness;
+
+  const SegmentationReport({
+    required this.originalWidth,
+    required this.originalHeight,
+    required this.rawComponents,
+    required this.usableGrains,
+    required this.touchingBlobs,
+    required this.skippedGrains,
+    required this.grainCapReached,
+    required this.sharpness,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Public data model
@@ -838,6 +939,13 @@ class _GrainCropData {
   const _GrainCropData(this.pngBytes, this.x, this.y, this.w, this.h);
 }
 
+class _SegmentationResult {
+  final List<_GrainCropData> crops;
+  final SegmentationReport report;
+
+  const _SegmentationResult(this.crops, this.report);
+}
+
 // ---------------------------------------------------------------------------
 // GrainSegmenter -- public API
 // ---------------------------------------------------------------------------
@@ -846,6 +954,7 @@ class GrainSegmenter {
   Uint8List? _encoderBytes;
   Uint8List? _decoderBytes;
   bool _initialized = false;
+  SegmentationReport? lastReport;
 
   /// Load model bytes from assets. Must be called before [segment].
   Future<void> init() async {
@@ -881,13 +990,14 @@ class GrainSegmenter {
     );
 
     // Run everything in a separate isolate so the UI thread is never blocked.
-    final results = await compute(_segmentIsolate, request);
+    final result = await compute(_segmentIsolate, request);
+    lastReport = result.report;
 
     final totalMs = DateTime.now().difference(t0).inMilliseconds;
     debugPrint('[GrainSegmenter] segment: total wall-time ${totalMs}ms, '
-        '${results.length} grains returned');
+        '${result.crops.length} grains returned sharpness=${result.report.sharpness}');
 
-    return results
+    return result.crops
         .map((d) => GrainCrop(
               pngBytes: d.pngBytes,
               x: d.x,
@@ -903,6 +1013,7 @@ class GrainSegmenter {
     _encoderBytes = null;
     _decoderBytes = null;
     _initialized = false;
+    lastReport = null;
   }
 }
 
@@ -910,7 +1021,7 @@ class GrainSegmenter {
 // Isolate entry-point (top-level so compute() can send it)
 // ---------------------------------------------------------------------------
 
-Future<List<_GrainCropData>> _segmentIsolate(_SegmentRequest req) async {
+Future<_SegmentationResult> _segmentIsolate(_SegmentRequest req) async {
   // Init ORT environment once per isolate invocation.
   OrtEnv.instance.init();
   try {
@@ -920,13 +1031,15 @@ Future<List<_GrainCropData>> _segmentIsolate(_SegmentRequest req) async {
   }
 }
 
-Future<List<_GrainCropData>> _runSegmentation(_SegmentRequest req) async {
+Future<_SegmentationResult> _runSegmentation(_SegmentRequest req) async {
   // -- STAGE A: decode + bake EXIF -----------------------------------------
   final stageA = Stopwatch()..start();
   img.Image? decoded = img.decodeImage(req.imageBytes);
   if (decoded == null) throw Exception('GrainSegmenter: cannot decode image');
   // image 3.x does NOT apply EXIF orientation by itself, so bake it in here.
   img.Image? fullImage = img.bakeOrientation(decoded);
+  final originalWidth = fullImage.width;
+  final originalHeight = fullImage.height;
   decoded = null;
   stageA.stop();
   debugPrint('[GrainSegmenter] A decode: ${stageA.elapsedMilliseconds}ms  '
@@ -940,6 +1053,7 @@ Future<List<_GrainCropData>> _runSegmentation(_SegmentRequest req) async {
   final workW = workImg.width;
   final workH = workImg.height;
   final cropW = cropImg.width;
+  final sharpness = _calculateTileSharpness(workImg);
   stageB.stop();
   debugPrint('[GrainSegmenter] B resize: ${stageB.elapsedMilliseconds}ms  '
       'WORK=${workW}x${workH}  CROP=${cropImg.width}x${cropImg.height}');
@@ -976,13 +1090,32 @@ Future<List<_GrainCropData>> _runSegmentation(_SegmentRequest req) async {
   debugPrint('[GrainSegmenter] D grain-finder: ${stageD.elapsedMilliseconds}ms  '
       'blobs found=${blobs.length}');
 
-  if (blobs.isEmpty) return [];
+  final touchingBlobs = _lastTouchingBlobs;
+  final rawComponents = _lastRawComponents;
+  final usableGrains = blobs.length;
+  final grainCapReached = blobs.length >= AppConstants.maxGrains;
+  if (blobs.isEmpty) {
+    return _SegmentationResult(
+      const [],
+      SegmentationReport(
+        originalWidth: originalWidth,
+        originalHeight: originalHeight,
+        rawComponents: rawComponents,
+        usableGrains: 0,
+        touchingBlobs: touchingBlobs,
+        skippedGrains: 0,
+        grainCapReached: false,
+        sharpness: sharpness,
+      ),
+    );
+  }
 
   // -- STAGE E+F: per-grain SAM decode -> crop -----------------------------
   final decoderSession =
       OrtSession.fromBuffer(req.decoderModelBytes, OrtSessionOptions());
 
   final results = <_GrainCropData>[];
+  var skippedGrains = 0;
   final stageEF = Stopwatch()..start();
 
   for (int bi = 0; bi < blobs.length; bi++) {
@@ -999,7 +1132,11 @@ Future<List<_GrainCropData>> _runSegmentation(_SegmentRequest req) async {
       cropW: cropW,
       blobIndex: bi,
     );
-    if (crop != null) results.add(crop);
+    if (crop != null) {
+      results.add(crop);
+    } else {
+      skippedGrains++;
+    }
   }
 
   stageEF.stop();
@@ -1009,7 +1146,19 @@ Future<List<_GrainCropData>> _runSegmentation(_SegmentRequest req) async {
   // -- STAGE G: release sessions -------------------------------------------
   decoderSession.release();
 
-  return results;
+  return _SegmentationResult(
+    results,
+    SegmentationReport(
+      originalWidth: originalWidth,
+      originalHeight: originalHeight,
+      rawComponents: rawComponents,
+      usableGrains: usableGrains,
+      touchingBlobs: touchingBlobs,
+      skippedGrains: skippedGrains,
+      grainCapReached: grainCapReached,
+      sharpness: sharpness,
+    ),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1024,6 +1173,45 @@ img.Image _resizeLongSide(img.Image src, int longSide) {
   final newH = (src.height * scale).round();
   return img.copyResize(src,
       width: newW, height: newH, interpolation: img.Interpolation.average);
+}
+
+double _calculateTileSharpness(img.Image work) {
+  final gray = Uint8List(work.width * work.height);
+  for (var y = 0; y < work.height; y++) {
+    for (var x = 0; x < work.width; x++) {
+      final px = work.getPixel(x, y);
+      gray[y * work.width + x] = (0.299 * img.getRed(px) +
+              0.587 * img.getGreen(px) +
+              0.114 * img.getBlue(px))
+          .round()
+          .clamp(0, 255);
+    }
+  }
+  var maximum = 0.0;
+  for (var ty = 0; ty < 6; ty++) {
+    for (var tx = 0; tx < 6; tx++) {
+      final x0 = (work.width * tx ~/ 6).clamp(1, work.width - 2);
+      final x1 = (work.width * (tx + 1) ~/ 6).clamp(x0 + 1, work.width - 1);
+      final y0 = (work.height * ty ~/ 6).clamp(1, work.height - 2);
+      final y1 = (work.height * (ty + 1) ~/ 6).clamp(y0 + 1, work.height - 1);
+      final values = <double>[];
+      for (var y = y0; y < y1; y++) {
+        for (var x = x0; x < x1; x++) {
+          final i = y * work.width + x;
+          values.add((4 * gray[i] - gray[i - work.width] -
+                  gray[i + work.width] - gray[i - 1] - gray[i + 1])
+              .toDouble());
+        }
+      }
+      if (values.isEmpty) continue;
+      final mean = values.reduce((a, b) => a + b) / values.length;
+      final variance =
+          values.map((v) => (v - mean) * (v - mean)).reduce((a, b) => a + b) /
+              values.length;
+      if (variance > maximum) maximum = variance;
+    }
+  }
+  return maximum;
 }
 
 // ---------------------------------------------------------------------------
@@ -1229,6 +1417,8 @@ List<_Blob> _findGrainBlobs(img.Image work, int w, int h) {
 
   debugPrint('[GrainSegmenter] D components: raw=$rawCount  '
       'usable=$usable  aboveMax=$aboveMax  kept=${blobs.length}');
+  _lastRawComponents = rawCount;
+  _lastTouchingBlobs = aboveMax;
   return blobs;
 }
 
@@ -1557,5 +1747,3 @@ Uint8List _boxBlur(Uint8List src, int w, int h, int passes) {
   }
   return cur;
 }
-
-

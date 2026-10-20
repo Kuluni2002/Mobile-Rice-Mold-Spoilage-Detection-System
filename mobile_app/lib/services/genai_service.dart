@@ -199,10 +199,21 @@ class GenAIService {
   static Future<Recommendation> getRecommendation({
     required String label, // healthy / early_risk / spoiled
   }) async {
+    final normalizedLabel = _normaliseLabel(label);
+    debugPrint('GenAI label=$normalizedLabel');
+    if (!_isSupportedLabel(normalizedLabel)) {
+      final fallback = _fallback(normalizedLabel);
+      _logFromAi(false);
+      _logSections(fallback);
+      return Recommendation(text: fallback, fromAi: false);
+    }
     final key = AppConstants.geminiApiKey;
     if (key.isEmpty) {
+      final fallback = _fallback(normalizedLabel);
+      _logFromAi(false);
+      _logSections(fallback);
       return Recommendation(
-        text: _fallback(label),
+        text: fallback,
         fromAi: false,
         note: 'AI is not set up on this device (no API key). Showing built-in guidance.',
       );
@@ -224,7 +235,7 @@ class GenAIService {
               'contents': [
                 {
                   'parts': [
-                    {'text': _buildPrompt(label)},
+                    {'text': _buildPrompt(normalizedLabel)},
                   ],
                 },
               ],
@@ -236,41 +247,60 @@ class GenAIService {
           )
           .timeout(_timeout);
 
+      debugPrint('GenAI HTTP ${response.statusCode}');
       if (response.statusCode == 200) {
         final text = _extractText(response.body);
         if (text != null && text.isNotEmpty) {
-          return Recommendation(text: _clean(text), fromAi: true);
+          final cleaned = _clean(text);
+          _logFromAi(true);
+          _logSections(cleaned);
+          return Recommendation(text: cleaned, fromAi: true);
         }
         debugPrint('Gemini: empty answer: ${_short(response.body)}');
+        final fallback = _fallback(normalizedLabel);
+        _logFromAi(false);
+        _logSections(fallback);
         return Recommendation(
-          text: _fallback(label),
+          text: fallback,
           fromAi: false,
           note: 'AI returned an empty answer. Showing built-in guidance.',
         );
       }
 
       debugPrint('Gemini HTTP ${response.statusCode}: ${_short(response.body)}');
+      final fallback = _fallback(normalizedLabel);
+      _logFromAi(false);
+      _logSections(fallback);
       return Recommendation(
-        text: _fallback(label),
+        text: fallback,
         fromAi: false,
         note: '${_statusMessage(response.statusCode)} Showing built-in guidance.',
       );
     } on TimeoutException {
+      final fallback = _fallback(normalizedLabel);
+      _logFromAi(false);
+      _logSections(fallback);
       return Recommendation(
-        text: _fallback(label),
+        text: _fallback(normalizedLabel),
         fromAi: false,
         note: 'AI took too long to answer. Showing built-in guidance.',
       );
     } on SocketException {
+      final fallback = _fallback(normalizedLabel);
+      _logFromAi(false);
+      _logSections(fallback);
       return Recommendation(
-        text: _fallback(label),
+        text: fallback,
         fromAi: false,
         note: 'No internet connection. Showing built-in guidance.',
       );
     } catch (e) {
       debugPrint('Gemini error: $e');
+      final fallback = _fallback(normalizedLabel);
+      _logFromAi(false);
+      _logSections(fallback);
       return Recommendation(
-        text: _fallback(label),
+        text: fallback,
         fromAi: false,
         note: 'AI is unavailable right now. Showing built-in guidance.',
       );
@@ -279,41 +309,41 @@ class GenAIService {
 
   // ── Prompt ────────────────────────────────────────────────────────────────
   static String _buildPrompt(String label) {
-    final String meaning;
-    switch (label.toLowerCase()) {
+    const outputRules = '''
+OUTPUT RULES (all three): plain text only, no markdown, no asterisks, no # headings; put each section title on its own line, followed by 2 or 3
+bullets that start with "• "; simple words; do not mention the app, AI or any numbers.''';
+    const opening = 'You are an advisor for small-scale rice farmers and millers in Sri Lanka. A phone app checked a sample of stored rice and gave this overall result:';
+
+    switch (_normaliseLabel(label)) {
       case 'healthy':
-        meaning = 'Most grains look healthy, with no clear signs of mold.';
-        break;
+        return '''$opening HEALTHY.
+Meaning: most grains look healthy, no clear signs of mold.
+Goal: keep it that way. Tone: calm and reassuring, short (under 150 words).
+Section titles (exact): "Keep it healthy" / "Traditional methods" / "Storage checklist" / "Next check".
+Must include: dry the rice well before storing (about 14% moisture or lower), good airflow, sacks on wooden planks off the floor and away from walls, look through the stock about once a month; traditional: dried neem (kohomba) leaves between sacks, clean sacks or clay pots, sun-drying on a clean mat if it feels damp. Next check: scan again in about 30 days.
+Must NOT include: words like discard, danger or urgent.
+
+$outputRules''';
       case 'early_risk':
-        meaning = 'Many grains show the first signs of mold or damp damage. There is still time to act.';
-        break;
+        return '''$opening EARLY_RISK.
+Meaning: many grains show the first signs of mold or damp damage; there is still time to act.
+Goal: stop it spreading and save the stock. Tone: calm but urgent.
+Section titles (exact): "Act within 48 hours" / "Check and separate" / "Traditional methods" / "Re-scan plan".
+Must include: spread the rice out and sun-dry it on a clean mat, let it cool before storing; pick out discoloured or musty grains and keep them apart; improve airflow and move the stock away from damp walls and floors; traditional: dried neem (kohomba) leaves and a thin layer of clean wood ash help against pests but do NOT remove mold that has already started; do not eat grains that look moldy; re-scan in 3 to 7 days and treat the rice as spoiled if the smell or colour gets worse.
+
+$outputRules''';
       case 'spoiled':
-        meaning = 'Many grains are visibly moldy or heavily discoloured.';
-        break;
+        return '''$opening SPOILED.
+Meaning: many grains are visibly moldy or heavily discoloured; the rice is not safe.
+Goal: safety first, stop the contamination spreading. Tone: serious and clear, no panic.
+Section titles (exact): "Safety first" / "What to do with this stock" / "Protect the rest" / "Traditional methods".
+Must include: separate the moldy grains right away; do not eat them or feed them to animals, because cooking and washing do not remove mold toxins; throw them away in a sealed bag, away from animals and from other stock; cover the nose and mouth and wash hands after handling; check other batches stored nearby; find and fix the cause (leaks, damp, poor airflow); for a large quantity ask the local agriculture officer or the supplier. Traditional methods: sun-dry and clean containers and sacks, and keep the remaining clean rice with dried neem (kohomba) leaves, but state clearly that neem, ash or sun-drying cannot cure rice that is already moldy. Re-scan the rest in 2 to 3 days.
+Must NOT suggest that moldy rice can be saved by washing, drying or neem. No medical advice.
+
+$outputRules''';
       default:
-        meaning = 'The condition of the rice is unclear.';
+        return '';
     }
-
-    return '''
-You are an advisor for small-scale rice farmers and millers in Sri Lanka.
-A phone app checked a sample of stored rice and gave one overall result.
-
-Result: ${label.replaceAll('_', ' ')}
-Meaning: $meaning
-
-Write practical advice for this result in plain English with simple words.
-Rules:
-- Plain text only. No markdown, no asterisks, no # headings.
-- Use exactly these four sections. Put each section title on its own line, then 2 or 3 bullets that start with "• ":
-  What to do now
-  Traditional methods
-  Storage tips
-  When to re-scan
-- Under "Traditional methods" use ideas familiar in Sri Lanka, for example dried neem (kohomba) leaves between sacks, a thin layer of clean wood ash, sun-drying on a clean mat, clay pots or sealed containers, raised wooden planks. Say clearly that these help against pests and damp but cannot remove mold that has already formed.
-- If the result is spoiled: say to separate and throw away the visibly moldy grains and not to eat them or feed them to animals, because cooking does not remove mold toxins. Do not give medical advice.
-- If the result is healthy, keep it short and focus on prevention.
-- Keep the whole answer under 200 words. Do not mention the app or AI.
-''';
   }
 
   // ── Response handling ─────────────────────────────────────────────────────
@@ -358,51 +388,88 @@ Rules:
 
   // ── Built-in guidance, used when the AI cannot be reached ────────────────
   static String _fallback(String label) {
-    switch (label.toLowerCase()) {
+    switch (_normaliseLabel(label)) {
       case 'healthy':
-        return '''What to do now
-• Your rice looks healthy. Keep it dry and cool.
+        return '''Keep it healthy
+• Dry the rice well before storing, to about 14% moisture or lower, and keep good airflow.
+• Look through the stock about once a month.
 
 Traditional methods
-• Put dried neem (kohomba) leaves between the sacks or on top of the grain to keep insects away.
-• If the rice feels damp, dry it on a clean mat in the sun before storing.
+• Put dried neem (kohomba) leaves between sacks, and use clean sacks or clay pots.
+• If it feels damp, sun-dry it on a clean mat before storing.
 
-Storage tips
+Storage checklist
 • Keep sacks on wooden planks, off the floor and away from walls.
-• Use sealed containers or clay pots for small amounts.
+• Keep the storage area dry and well aired.
 
-When to re-scan
+Next check
 • Scan again in about 30 days.''';
       case 'early_risk':
-        return '''What to do now
-• Spread the rice out and check for a musty smell, damp patches or discoloured grains.
-• Pick out the discoloured grains and keep them apart from the healthy rice.
+        return '''Act within 48 hours
+• Spread the rice out and sun-dry it on a clean mat, then let it cool before storing.
+• Improve airflow and move the stock away from damp walls and floors.
+
+Check and separate
+• Pick out discoloured or musty grains and keep them apart.
+• Do not eat grains that look moldy.
 
 Traditional methods
-• Sun-dry the rice on a clean mat for a few hours on a dry day, and let it cool before storing.
-• Put dried neem (kohomba) leaves between the sacks. Neem helps against pests, but it cannot remove mold that has already started.
+• Dried neem (kohomba) leaves and a thin layer of clean wood ash help against pests.
+• They do not remove mold that has already started.
 
-Storage tips
-• Store on raised wooden planks with good airflow, away from damp walls and floors.
-
-When to re-scan
-• Scan again within 7 days and check the rice daily for smell or colour changes.''';
+Re-scan plan
+• Re-scan in 3 to 7 days and treat the rice as spoiled if smell or colour gets worse.''';
       case 'spoiled':
-        return '''What to do now
-• Separate the moldy grains right away. Do not eat them or feed them to animals: cooking does not remove mold toxins.
-• Check the rest of the stock grain by grain.
+        return '''Safety first
+• Separate the moldy grains right away. Do not eat them or feed them to animals.
+• Cover the nose and mouth and wash hands after handling.
+
+What to do with this stock
+• Throw the moldy grains away in a sealed bag, away from animals and other stock.
+• Cooking and washing do not remove mold toxins.
+
+Protect the rest
+• Check other nearby batches and fix leaks, damp or poor airflow.
+• For a large quantity, ask the local agriculture officer or the supplier.
 
 Traditional methods
-• Sun-dry the remaining clean rice on a mat and let it cool fully before storing.
-• Use dried neem (kohomba) leaves and clean sacks for the good rice. They keep pests away but cannot cure mold.
-
-Storage tips
-• Clean and dry the storage area and fix any leaks or damp spots before storing rice again.
-
-When to re-scan
-• Scan the remaining rice again within 3 days.''';
+• Sun-dry and clean containers and sacks, and keep clean rice with dried neem (kohomba) leaves.
+• Neem, ash or sun-drying cannot cure rice that is already moldy. Re-scan the rest in 2 to 3 days.''';
       default:
         return 'No guidance available. Please scan again.';
+    }
+  }
+
+  static String _normaliseLabel(String label) {
+    return label.trim().toLowerCase().replaceAll('-', '_');
+  }
+
+  static bool _isSupportedLabel(String label) {
+    return label == 'healthy' || label == 'early_risk' || label == 'spoiled';
+  }
+
+  static void _logFromAi(bool fromAi) {
+    debugPrint('GenAI fromAi=$fromAi');
+  }
+
+  static void _logSections(String text) {
+    const sectionTitles = {
+      'Keep it healthy',
+      'Traditional methods',
+      'Storage checklist',
+      'Next check',
+      'Act within 48 hours',
+      'Check and separate',
+      'Re-scan plan',
+      'Safety first',
+      'What to do with this stock',
+      'Protect the rest',
+    };
+    for (final line in text.split('\n')) {
+      final title = line.trim();
+      if (sectionTitles.contains(title)) {
+        debugPrint('GenAI section=$title');
+      }
     }
   }
 }

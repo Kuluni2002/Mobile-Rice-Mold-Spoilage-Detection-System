@@ -31,6 +31,14 @@ enum ImageQualityStatus {
 }
 
 class ImageQualityChecker {
+  static List<int>? readDimensions(Uint8List imageBytes) {
+    try {
+      final image = img.decodeImage(imageBytes);
+      return image == null ? null : [image.width, image.height];
+    } catch (_) {
+      return null;
+    }
+  }
   /// Check blur using Laplacian variance
   static Future<double> calculateBlurScore(Uint8List imageBytes) async {
     try {

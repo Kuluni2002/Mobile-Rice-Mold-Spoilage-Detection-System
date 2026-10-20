@@ -21,6 +21,9 @@ class _HomeScreenState extends State<HomeScreen> {
   Map<String, int> _stats = {};
   List<Batch> _batches = [];
   List<Batch> _recentBatches = [];
+  final Set<String> _knownBatchIds = {};
+  final Set<String> _unreadBatchIds = {};
+  bool _hasLoadedBatches = false;
 
   @override
   void initState() {
@@ -40,9 +43,20 @@ class _HomeScreenState extends State<HomeScreen> {
         DatabaseService.instance.getRecentBatches(),
       ]);
       if (!mounted) return;
+      final batches = results[1] as List<Batch>;
+      if (_hasLoadedBatches) {
+        final newBatchIds = batches
+            .map((batch) => batch.id)
+            .where((id) => !_knownBatchIds.contains(id));
+        _unreadBatchIds.addAll(newBatchIds);
+      }
+      _knownBatchIds
+        ..clear()
+        ..addAll(batches.map((batch) => batch.id));
+      _hasLoadedBatches = true;
       setState(() {
         _stats = results[0] as Map<String, int>;
-        _batches = results[1] as List<Batch>;
+        _batches = batches;
         _recentBatches = results[2] as List<Batch>;
         _loading = false;
       });
@@ -60,12 +74,6 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Rice Mold Detector'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: () {},
-          ),
-        ],
       ),
       body: _buildBody(),
       floatingActionButton: FloatingActionButton.extended(
@@ -77,11 +85,18 @@ class _HomeScreenState extends State<HomeScreen> {
       floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedIndex,
-        onDestinationSelected: (index) => setState(() => _selectedIndex = index),
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'Home'),
-          NavigationDestination(icon: Icon(Icons.inventory_2_outlined), selectedIcon: Icon(Icons.inventory_2), label: 'Batches'),
-          NavigationDestination(icon: Icon(Icons.analytics_outlined), selectedIcon: Icon(Icons.analytics), label: 'Analytics'),
+        onDestinationSelected: (index) {
+          if (index == 2) _unreadBatchIds.clear();
+          setState(() => _selectedIndex = index);
+        },
+        destinations: [
+          const NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'Home'),
+          const NavigationDestination(icon: Icon(Icons.inventory_2_outlined), selectedIcon: Icon(Icons.inventory_2), label: 'Batches'),
+          NavigationDestination(
+            icon: _buildNotificationIcon(),
+            selectedIcon: _buildNotificationIcon(selected: true),
+            label: 'Notifications',
+          ),
         ],
       ),
     );
@@ -94,7 +109,7 @@ class _HomeScreenState extends State<HomeScreen> {
       case 1:
         return _buildBatchesTab();
       case 2:
-        return _buildAnalyticsTab();
+        return _buildNotificationsTab();
       default:
         return _buildHomeTab();
     }
@@ -280,7 +295,66 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildAnalyticsTab() => _buildEmptyState(Icons.analytics_outlined, 'No data available yet.\nStart scanning batches to see analytics.');
+  Widget _buildNotificationsTab() {
+    return RefreshIndicator(
+      onRefresh: _loadData,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(16),
+        children: [
+          Text('Notifications', style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: 16),
+          if (_batches.isEmpty)
+            _buildEmptyState(Icons.notifications_none_outlined, 'No notifications yet')
+          else
+            ..._batches.map(_buildBatchNotification),
+          const SizedBox(height: 100),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBatchNotification(Batch batch) {
+    final unread = _unreadBatchIds.contains(batch.id);
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      color: unread ? AppColors.primary.withOpacity(0.06) : null,
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        leading: CircleAvatar(
+          backgroundColor: AppColors.primary.withOpacity(0.12),
+          child: const Icon(Icons.inventory_2_outlined, color: AppColors.primary),
+        ),
+        title: Text(
+          'New batch added',
+          style: TextStyle(fontWeight: unread ? FontWeight.w700 : FontWeight.w500),
+        ),
+        subtitle: Text('${batch.batchNumber} · ${DateFormat.yMd().format(batch.createdAt)}'),
+        trailing: unread
+            ? Container(
+                width: 9,
+                height: 9,
+                decoration: const BoxDecoration(color: AppColors.primary, shape: BoxShape.circle),
+              )
+            : const Icon(Icons.chevron_right, color: AppColors.textSecondary),
+        onTap: () async {
+          await Navigator.pushNamed(context, AppRoutes.batchDetail, arguments: {'batchId': batch.id});
+          if (mounted) await _loadData();
+        },
+      ),
+    );
+  }
+
+  Widget _buildNotificationIcon({bool selected = false}) {
+    final icon = Icon(
+      selected ? Icons.notifications : Icons.notifications_outlined,
+    );
+    if (_unreadBatchIds.isEmpty) return icon;
+    return Badge(
+      label: Text('${_unreadBatchIds.length}'),
+      child: icon,
+    );
+  }
 
   Widget _buildErrorState() => Center(
     child: Column(mainAxisSize: MainAxisSize.min, children: [

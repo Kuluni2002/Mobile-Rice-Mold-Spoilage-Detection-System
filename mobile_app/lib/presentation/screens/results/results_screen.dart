@@ -1,7 +1,7 @@
 
 
 import 'dart:io';
-import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:path/path.dart' as path;
@@ -15,6 +15,7 @@ import '../../../models/scan_record.dart';
 import '../../../services/database_service.dart';
 import '../../../services/genai_service.dart';
 import '../../screens/batch/batch_detail_screen.dart';
+import '../camera/camera_screen.dart';
 
 class ResultsScreen extends StatefulWidget {
   final String? scanId;
@@ -34,6 +35,8 @@ class _ResultsScreenState extends State<ResultsScreen> {
   String? _recommendationError;
   bool _isSaving = false;
   bool _isSaved = false;
+  String? _debugLabel;
+  int _recommendationRequestId = 0;
 
   @override
   void initState() {
@@ -51,7 +54,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
   ClassificationResult? _resultFromArgs(Map<String, dynamic>? args) {
     if (args == null || args['label'] == null) return null;
     return ClassificationResult(
-      label: args['label'] as String,
+      label: _debugLabel ?? args['label'] as String,
       confidence: (args['confidence'] as num).toDouble(),
       timestamp: DateTime.fromMillisecondsSinceEpoch(args['timestamp'] as int),
     );
@@ -68,8 +71,11 @@ class _ResultsScreenState extends State<ResultsScreen> {
   Future<void> _generateRecommendations() async {
     final result = _resultFromArgs(_readArgs());
     if (result == null) return;
+    final requestId = ++_recommendationRequestId;
 
+    if (!mounted) return;
     setState(() {
+      _recommendation = null;
       _isLoadingRecommendations = true;
       _recommendationError = null;
     });
@@ -78,7 +84,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
       // Gemini only receives the final result: healthy / early_risk / spoiled
       final rec = await GenAIService.getRecommendation(label: result.label);
 
-      if (mounted) {
+      if (mounted && requestId == _recommendationRequestId) {
         setState(() {
           _recommendation = rec;
           _isLoadingRecommendations = false;
@@ -86,7 +92,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
       }
 
     } catch (e) {
-      if (mounted) {
+      if (mounted && requestId == _recommendationRequestId) {
         setState(() {
           _recommendationError = 'Could not load recommendations';
           _isLoadingRecommendations = false;
@@ -96,7 +102,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
   }
 
   Future<void> _saveToHistory() async {
-    if (_isSaving || _isSaved || _recommendation == null) return;
+    if (_debugLabel != null || _isSaving || _isSaved || _recommendation == null) return;
 
     final args = _readArgs();
     if (args == null) return;
@@ -243,6 +249,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
       isUtc: true,
     ).toUtc();
     String? copiedImagePath;
+    var savedWithoutPhoto = false;
     final sourceImagePath = args['imagePath'] as String?;
     if (sourceImagePath != null) {
       try {
@@ -256,6 +263,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
         copiedImagePath = (await File(sourceImagePath).copy(destination)).path;
       } catch (_) {
         copiedImagePath = null;
+        savedWithoutPhoto = true;
       }
     }
 
@@ -289,7 +297,9 @@ class _ResultsScreenState extends State<ResultsScreen> {
       });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Saved to batch ${batch.batchNumber}'),
+          content: Text(savedWithoutPhoto
+              ? 'Saved without the photo'
+              : 'Saved to batch ${batch.batchNumber}'),
           action: SnackBarAction(
             label: 'View batch',
             onPressed: () => Navigator.push(
@@ -356,15 +366,25 @@ class _ResultsScreenState extends State<ResultsScreen> {
     final String winnerPct =
         total == 0 ? (result.confidence * 100).toStringAsFixed(1) : pct(winnerCount);
     final Color statusColor = _getStatusColor(result.label);
+    final warnings = (args['warnings'] as List?)?.whereType<String>().toList() ?? <String>[];
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Scan Results'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.info_outline),
-            onPressed: () => _showInfoDialog(),
-          ),
+          if (kDebugMode)
+            GestureDetector(
+              onLongPress: _cycleDebugResult,
+              child: IconButton(
+                icon: const Icon(Icons.info_outline),
+                onPressed: _showInfoDialog,
+              ),
+            )
+          else
+            IconButton(
+              icon: const Icon(Icons.info_outline),
+              onPressed: _showInfoDialog,
+            ),
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: _isLoadingRecommendations ? null : _generateRecommendations,
@@ -399,6 +419,39 @@ class _ResultsScreenState extends State<ResultsScreen> {
                 ),
               ),
             const SizedBox(height: 16),
+
+            if (warnings.isNotEmpty)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                margin: const EdgeInsets.only(bottom: 16),
+                decoration: BoxDecoration(
+                  color: Colors.amber.shade100,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (final warning in warnings)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Text(warning, maxLines: 2, overflow: TextOverflow.ellipsis),
+                      ),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton.icon(
+                        onPressed: () => Navigator.of(context).pushReplacement(
+                          MaterialPageRoute(
+                            builder: (_) => CameraScreen(batchId: args['batchId'] as String?),
+                          ),
+                        ),
+                        icon: const Icon(Icons.camera_alt_outlined),
+                        label: const Text('Retake photo'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
 
             // Status banner
             Container(
@@ -640,6 +693,17 @@ class _ResultsScreenState extends State<ResultsScreen> {
                                 color: Colors.grey.shade600,
                               ),
                             ),
+                            if (!_recommendation!.fromAi)
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: TextButton.icon(
+                                  onPressed: _isLoadingRecommendations
+                                      ? null
+                                      : _generateRecommendations,
+                                  icon: const Icon(Icons.auto_awesome),
+                                  label: const Text('Try AI again'),
+                                ),
+                              ),
                           ],
                         ],
                       )
@@ -729,6 +793,16 @@ class _ResultsScreenState extends State<ResultsScreen> {
         ],
       ),
     );
+  }
+
+  void _cycleDebugResult() {
+    if (!kDebugMode) return;
+    final labels = ['healthy', 'early_risk', 'spoiled'];
+    final current = _debugLabel ?? (_readArgs()?['label'] as String?);
+    final currentIndex = labels.indexOf(current?.trim().toLowerCase().replaceAll('-', '_') ?? '');
+    final nextLabel = labels[(currentIndex + 1) % labels.length];
+    setState(() => _debugLabel = nextLabel);
+    _generateRecommendations();
   }
 
   List<Widget> _withDividers(List<Widget> rows) {

@@ -1,7 +1,6 @@
 
 
 
-import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
@@ -11,12 +10,13 @@ import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/utils/image_quality_checker.dart';
 import '../../../core/utils/permission_handler.dart';
+import '../../../core/errors/analysis_failure.dart';
 import '../../widgets/camera/camera_overlay.dart';
-import '../../widgets/camera/quality_indicator.dart';
 import '../../widgets/camera/distance_indicator.dart';
 import '../../../services/tflite_service.dart';
 import '../../../services/grain_segmenter.dart';
 import '../results/results_screen.dart';
+import '../../widgets/common/error_dialog.dart';
 
 class CameraScreen extends StatefulWidget {
   final String? batchId;
@@ -36,15 +36,14 @@ class _CameraScreenState extends State<CameraScreen>
   List<CameraDescription>? _cameras;
   bool _isInitialized = false;
   String? _error;
+  bool _permissionPermanentlyDenied = false;
   
   // Image picker
   final ImagePicker _imagePicker = ImagePicker();
   
   // Real-time quality feedback
-  ImageQualityResult? _qualityResult;
-  Timer? _qualityCheckTimer;
-  bool _isChecking = false;
   bool _showGuides = true;
+  bool _cancelRequested = false;
 
   // Picked / captured photo shown in the scan area while it is analysed
   Uint8List? _pickedBytes;
@@ -63,11 +62,6 @@ class _CameraScreenState extends State<CameraScreen>
     });
   }
 
-  void _restartQualityChecks() {
-    _qualityCheckTimer?.cancel();
-    if (_isInitialized) _startQualityChecks();
-  }
-  
   @override
   void initState() {
     super.initState();
@@ -77,7 +71,7 @@ class _CameraScreenState extends State<CameraScreen>
   
   @override
   void dispose() {
-    _qualityCheckTimer?.cancel();
+    _cancelRequested = true;
     WidgetsBinding.instance.removeObserver(this);
     _cameraController?.dispose();
     super.dispose();
@@ -90,9 +84,8 @@ class _CameraScreenState extends State<CameraScreen>
     if (controller == null || !controller.value.isInitialized) {
       return;
     }
-    
+
     if (state == AppLifecycleState.inactive) {
-      _qualityCheckTimer?.cancel();
       controller.dispose();
     } else if (state == AppLifecycleState.resumed) {
       _checkPermissions();
@@ -103,9 +96,12 @@ class _CameraScreenState extends State<CameraScreen>
     final hasPermission = await PermissionHandlerUtil.checkCameraPermission();
     
     if (!hasPermission) {
+      _permissionPermanentlyDenied =
+          await PermissionHandlerUtil.isCameraPermissionPermanentlyDenied();
       final granted = await PermissionHandlerUtil.requestCameraPermission();
       
       if (!granted) {
+        if (!mounted) return;
         setState(() {
           _error = 'Camera permission is required to scan grains';
         });
@@ -144,58 +140,16 @@ class _CameraScreenState extends State<CameraScreen>
       
       if (!mounted) return;
       
+      if (!mounted) return;
       setState(() {
         _isInitialized = true;
+        _error = null;
       });
       
       // Start real-time quality checks
-      _startQualityChecks();
-      
     } catch (e) {
-      setState(() {
-        _error = 'Failed to initialize camera: $e';
-      });
-    }
-  }
-  
-  void _startQualityChecks() {
-    // Check quality every 3 seconds (increased interval)
-    _qualityCheckTimer = Timer.periodic(
-      const Duration(seconds: 3),
-      (_) => _performQualityCheck(),
-    );
-  }
-  
-  Future<void> _performQualityCheck() async {
-    if (_isChecking || 
-        _cameraController == null || 
-        !_cameraController!.value.isInitialized) {
-      return;
-    }
-    
-    _isChecking = true;
-    
-    try {
-      final image = await _cameraController!.takePicture();
-      final imageBytes = await image.readAsBytes();
-      
-      // Quick check for real-time feedback (skip TFLite for periodic checks)
-      final result = ImageQualityChecker.quickCheck(imageBytes);
-      
-      if (mounted) {
-        setState(() {
-          _qualityResult = result;
-        });
-      }
-      
-      // Clean up the temporary file
-      await File(image.path).delete().catchError((_) {});
-      
-    } catch (e) {
-      // Silently fail for periodic checks
-      debugPrint('Quality check failed: $e');
-    } finally {
-      _isChecking = false;
+      if (!mounted) return;
+      setState(() => _error = AnalysisFailure.from(e).message);
     }
   }
   
@@ -207,8 +161,6 @@ class _CameraScreenState extends State<CameraScreen>
     }
 
     try {
-      _qualityCheckTimer?.cancel();
-
       final image = await _cameraController!.takePicture();
       final imageBytes = await image.readAsBytes();
 
@@ -229,7 +181,7 @@ class _CameraScreenState extends State<CameraScreen>
           backgroundColor: AppColors.spoiled,
         ),
       );
-      _restartQualityChecks();
+      await _showFailure(AnalysisFailure.from(e), onRetry: _captureImage);
     }
   }
 
@@ -237,7 +189,6 @@ class _CameraScreenState extends State<CameraScreen>
     if (_isAnalyzing) return;
 
     try {
-      // No size limits: the segmenter needs the original full-resolution photo.
       final XFile? pickedFile =
           await _imagePicker.pickImage(source: ImageSource.gallery);
       if (pickedFile == null) return;
@@ -245,7 +196,6 @@ class _CameraScreenState extends State<CameraScreen>
       final Uint8List imageBytes = await File(pickedFile.path).readAsBytes();
       if (!mounted) return;
 
-      _qualityCheckTimer?.cancel();
       setState(() {
         _pickedBytes = imageBytes;
         _isAnalyzing = true;
@@ -262,7 +212,7 @@ class _CameraScreenState extends State<CameraScreen>
           backgroundColor: AppColors.spoiled,
         ),
       );
-      _restartQualityChecks();
+      await _showFailure(AnalysisFailure.from(e), onChooseAnotherPhoto: _pickImageFromGallery);
     }
   }
 
@@ -274,15 +224,48 @@ class _CameraScreenState extends State<CameraScreen>
     final sw = Stopwatch()..start();
 
     try {
+      if (imageBytes.length > AppConstants.maxImageBytes) {
+        throw const AnalysisFailure(
+          kind: FailureKind.imageTooLarge,
+          title: 'Photo is too large',
+          message: 'This photo is larger than 25 MB.',
+          hint: 'Choose a smaller JPEG or PNG photo.',
+        );
+      }
+      final dimensions = ImageQualityChecker.readDimensions(imageBytes);
+      if (dimensions == null) {
+        throw const AnalysisFailure(
+          kind: FailureKind.imageUnreadable,
+          title: 'Photo could not be read',
+          message: 'Unsupported or damaged image.',
+          hint: 'Use a JPEG or PNG photo.',
+        );
+      }
+      final longSide = dimensions.reduce((a, b) => a > b ? a : b);
+      if (longSide < 600) {
+        throw const AnalysisFailure(
+          kind: FailureKind.imageTooSmall,
+          title: 'Photo is too small',
+          message: 'The photo needs a longer side of at least 600 pixels.',
+          hint: 'Move closer or choose a higher-resolution photo.',
+        );
+      }
       debugPrint('=== Pile analysis start: ${imageBytes.length} bytes ===');
 
       // 1. Segment grains (MobileSAM ONNX, runs in an isolate)
       _setStage('Finding grains... this can take up to a minute');
       segmenter = GrainSegmenter();
       await segmenter.init();
-      final crops = await segmenter.segment(imageBytes);
+      final crops = await segmenter.segment(imageBytes).timeout(AppConstants.analysisTimeout);
       debugPrint('Segmentation: ${crops.length} grains, ${sw.elapsedMilliseconds} ms');
-      if (crops.isEmpty) throw Exception('No grains detected');
+      if (crops.isEmpty) {
+        throw const AnalysisFailure(
+          kind: FailureKind.noGrains,
+          title: 'No grains found',
+          message: 'No grains were found. Use a plain background, even light, and spread the grains apart.',
+          hint: 'Retake the photo with grains separated.',
+        );
+      }
 
       // 2. Classify every crop (Stage 1, then Stage 2 for mold only)
       tflite = TFLiteService();
@@ -293,18 +276,34 @@ class _CameraScreenState extends State<CameraScreen>
         AppConstants.classEarlyRisk: 0,
         AppConstants.classSpoiled: 0,
       };
+      var failedClassifications = 0;
       for (var i = 0; i < crops.length; i++) {
+        if (_cancelRequested || !mounted) return;
         _setStage('Checking grain ${i + 1} of ${crops.length}...');
         final r = await tflite.classifyGrain(crops[i].pngBytes);
         if (r.finalLabel.startsWith('error')) {
           debugPrint('Grain $i skipped: ${r.finalLabel}');
+          failedClassifications++;
           continue;
         }
         counts[r.finalLabel] = counts[r.finalLabel]! + 1;
         debugPrint('Grain $i -> ${r.finalLabel}  s1=${r.stage1Probs}  s2=${r.stage2Probs}');
       }
       final total = counts.values.fold<int>(0, (a, b) => a + b);
-      if (total == 0) throw Exception('Could not classify any grain');
+      if (total == 0) {
+        throw const AnalysisFailure(
+          kind: FailureKind.model,
+          title: 'Models unavailable',
+          message: 'The analysis models could not be loaded. Restart the app.',
+          hint: 'Restart the app and try again.',
+        );
+      }
+      final report = segmenter.lastReport;
+      final warnings = <String>[];
+      if (longSide < AppConstants.minImageLongSide) warnings.add('Low-resolution photo. Results may be less reliable.');
+      if (report != null && report.sharpness < AppConstants.blurTileVarianceMin) warnings.add('The photo looks blurry. Retake it with the phone held steady.');
+      if (report?.grainCapReached == true) warnings.add('Only the first 150 grains were analysed.');
+      if (failedClassifications > 0) warnings.add('$failedClassifications grains could not be checked.');
 
       // 3. Highest count wins; on a tie the more severe class wins
       const severityOrder = [
@@ -335,6 +334,7 @@ class _CameraScreenState extends State<CameraScreen>
               'timestamp': DateTime.now().millisecondsSinceEpoch,
               'scanId': DateTime.now().millisecondsSinceEpoch.toString(),
               'batchId': widget.batchId,
+              'warnings': warnings,
             },
           ),
         ),
@@ -343,24 +343,39 @@ class _CameraScreenState extends State<CameraScreen>
       debugPrint('=== Pile analysis error ===\n$e\n$stackTrace');
       if (!mounted) return;
       _resetAnalysis();
-      _restartQualityChecks();
-
-      showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Analysis failed'),
-          content: Text(e.toString().replaceFirst('Exception: ', '')),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('OK'),
-            ),
-          ],
-        ),
-      );
+      await _showFailure(AnalysisFailure.from(e), onRetry: () => _captureImage(), onChooseAnotherPhoto: _pickImageFromGallery);
     } finally {
       segmenter?.dispose();
       tflite?.dispose();
+    }
+
+  }
+
+  Future<void> _showFailure(
+    AnalysisFailure failure, {
+    VoidCallback? onRetry,
+    VoidCallback? onChooseAnotherPhoto,
+  }) => showFailureDialog(context, failure, onRetry: onRetry, onChooseAnotherPhoto: onChooseAnotherPhoto);
+
+  Future<void> _handleBack() async {
+    if (!_isAnalyzing) {
+      if (mounted) Navigator.of(context).pop();
+      return;
+    }
+    final cancel = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Cancel analysis?'),
+        content: const Text('The current analysis will be stopped.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep analysing')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Cancel')),
+        ],
+      ),
+    );
+    if (cancel == true && mounted) {
+      _cancelRequested = true;
+      Navigator.of(context).pop();
     }
   }
 
@@ -427,44 +442,6 @@ class _CameraScreenState extends State<CameraScreen>
         ),
       ),
     );
-  }
-  
-  void _showQualityError(String message) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Poor Image Quality'),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('OK'),
-          ),
-        ],
-      ),
-    );
-  }
-  
-  Future<bool> _showQualityWarning(String message) async {
-    final result = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Image Quality Warning'),
-        content: Text('$message\n\nDo you want to proceed anyway?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Retake'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Proceed'),
-          ),
-        ],
-      ),
-    );
-    
-    return result ?? false;
   }
   
   @override
@@ -564,7 +541,7 @@ class _CameraScreenState extends State<CameraScreen>
           children: [
             IconButton(
               icon: const Icon(Icons.close, color: Colors.white),
-              onPressed: () => Navigator.of(context).pop(),
+              onPressed: _handleBack,
             ),
             const Text(
               'Scan Grains',
@@ -619,8 +596,12 @@ class _CameraScreenState extends State<CameraScreen>
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 ElevatedButton(
-                  onPressed: _checkPermissions,
-                  child: const Text('Retry Camera'),
+                  onPressed: _permissionPermanentlyDenied
+                      ? PermissionHandlerUtil.openAppSettings
+                      : _checkPermissions,
+                  child: Text(_permissionPermanentlyDenied
+                      ? 'Open settings'
+                      : 'Allow camera'),
                 ),
                 const SizedBox(width: 16),
                 ElevatedButton(
@@ -677,17 +658,9 @@ class _CameraScreenState extends State<CameraScreen>
         if (_showGuides)
           CameraOverlay(
             showGuides: _showGuides,
-            message: _qualityResult?.message,
-            messageColor: _getMessageColor(_qualityResult?.status),
           ),
         
         // Quality indicator
-        if (_qualityResult != null)
-          Positioned(
-            top: 100,
-            right: 24,
-            child: QualityIndicator(result: _qualityResult!),
-          ),
         
         // Distance indicator (placeholder)
         const Positioned(
@@ -699,21 +672,8 @@ class _CameraScreenState extends State<CameraScreen>
     );
   }
   
-  Color _getMessageColor(ImageQualityStatus? status) {
-    switch (status) {
-      case ImageQualityStatus.good:
-        return AppColors.healthy;
-      case ImageQualityStatus.warning:
-        return AppColors.earlyRisk;
-      case ImageQualityStatus.error:
-        return AppColors.spoiled;
-      default:
-        return AppColors.primary;
-    }
-  }
-  
   Widget _buildBottomControls() {
-    final isReady = _qualityResult?.status == ImageQualityStatus.good;
+    const isReady = true;
     
     return Positioned(
       bottom: 0,
@@ -733,29 +693,14 @@ class _CameraScreenState extends State<CameraScreen>
         ),
         child: Column(
           children: [
-            // Instruction text
             const Text(
-              'Spread 5-20 grains evenly on dark surface',
+              'Place the grains on a plain, evenly lit surface',
+              textAlign: TextAlign.center,
               style: TextStyle(
                 color: Colors.white,
                 fontSize: 14,
               ),
-              textAlign: TextAlign.center,
             ),
-            const SizedBox(height: 8),
-            
-            // Tips
-            if (_isInitialized && !isReady && _qualityResult != null)
-              Text(
-                'Tip: ${_getQualityTip(_qualityResult!)}',
-                style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.7),
-                  fontSize: 12,
-                  fontStyle: FontStyle.italic,
-                ),
-                textAlign: TextAlign.center,
-              ),
-            
             const SizedBox(height: 24),
             
             // Control buttons
@@ -817,14 +762,4 @@ class _CameraScreenState extends State<CameraScreen>
     );
   }
   
-  String _getQualityTip(ImageQualityResult result) {
-    if (result.isBlurry) {
-      return 'Hold your phone steady and ensure good focus';
-    } else if (result.isTooDark) {
-      return 'Move to a brighter area or turn on more lights';
-    } else if (result.isTooBright) {
-      return 'Reduce direct light or move to avoid glare';
-    }
-    return 'Maintain distance of 25-30cm above grains';
-  }
 }

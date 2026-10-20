@@ -20,7 +20,7 @@ android {
         jvmTarget = "1.8"
     }
 
-      defaultConfig {
+    defaultConfig {
         applicationId = "com.example.mobile_app"
         minSdk = 26
         //minSdk = flutter.minSdkVersion
@@ -33,6 +33,7 @@ android {
         release {
             isMinifyEnabled = false
             isShrinkResources = false
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -49,6 +50,7 @@ android {
 flutter {
     source = "../.."
 }
+
 dependencies {
     implementation("androidx.core:core-ktx:1.9.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.1")
